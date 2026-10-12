@@ -1,3 +1,2 @@
-### Test protected API with JWT
-GET http://localhost:8080/hello?name=Zunn
-Authorization: Bearer eyJhbGciOiJIUzM4NCJ9.eyJzdWIiOiJlbW9jIiwiaWF0IjoxNzkxNTE0MDM2LCJleHAiOjE3OTE1MTc2MzZ9.p0JlN9bTMcAKNimKHV10v3VBVFSKnmijA4YtD-OmPflXP7AAdHO91Wnwt8mV2InA
+GET http://localhost:8080/api/messages/conversation/3?page=0&size=20
+Authorization: Bearer eyJhbGciOiJIUzM4NCJ9.eyJzdWIiOiJadW5WTiIsImlhdCI6MTc5MTgwMTAzOCwiZXhwIjoxNzkxODA0NjM4fQ.tk4eo_mTI1744Jd8S_xj-BY-CgnfuRT4Cg32t_cM-hZp3LxG_YwunRNWSjo0NsnB

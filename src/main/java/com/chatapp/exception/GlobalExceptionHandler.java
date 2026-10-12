@@ -6,7 +6,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-
+import org.springframework.web.server.ResponseStatusException;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -46,5 +46,22 @@ public class GlobalExceptionHandler {
                 false,
                 e.getMessage()
         );
+    }
+    // Xử lý lỗi HTTP do tầng Service chủ động ném ra.
+    @ExceptionHandler(ResponseStatusException.class)
+    public org.springframework.http.ResponseEntity<ErrorResponse>
+    handleResponseStatusException(ResponseStatusException e) {
+
+        HttpStatus status = HttpStatus.valueOf(
+                e.getStatusCode().value()
+        );
+
+        String message = e.getReason() != null
+                ? e.getReason()
+                : "Đã xảy ra lỗi";
+
+        return org.springframework.http.ResponseEntity
+                .status(status)
+                .body(new ErrorResponse(false, message));
     }
 }
