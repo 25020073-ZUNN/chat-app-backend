@@ -1,4 +1,3 @@
-```html
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -57,11 +56,21 @@
             overflow-y: auto;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
+            scroll-behavior: auto;
+        }
+
+        .message-line {
+            padding: 3px 0;
         }
 
         .hint {
             color: #666;
             font-size: 13px;
+        }
+
+        #historyStatus {
+            min-height: 18px;
+            margin: 5px 0;
         }
     </style>
 </head>
@@ -74,11 +83,13 @@
     <h3>1. Đăng nhập</h3>
 
     <label for="username">Username</label>
-    <input id="username" autocomplete="username"
+    <input id="username"
+           autocomplete="username"
            placeholder="Nhập username">
 
     <label for="password">Password</label>
-    <input id="password" type="password"
+    <input id="password"
+           type="password"
            autocomplete="current-password"
            placeholder="Nhập password">
 
@@ -86,8 +97,8 @@
     <button id="disconnectButton" disabled>Ngắt kết nối</button>
 
     <p class="hint">
-        Trang gọi API đăng nhập và chỉ giữ JWT trong bộ nhớ
-        khi trang đang chạy. Không lưu token vào localStorage.
+        JWT chỉ được giữ trong bộ nhớ khi trang đang chạy.
+        Trang không lưu token vào localStorage.
     </p>
 </div>
 
@@ -95,7 +106,9 @@
     <h3>2. Chọn cuộc trò chuyện</h3>
 
     <label for="conversationId">Conversation ID</label>
-    <input id="conversationId" type="number" min="1"
+    <input id="conversationId"
+           type="number"
+           min="1"
            placeholder="Ví dụ: 3">
 
     <button id="roomButton" disabled>Vào / đổi phòng</button>
@@ -109,472 +122,750 @@
 <div class="section">
     <h3>3. Gửi tin nhắn</h3>
 
-    <input id="content" maxlength="5000"
+    <input id="content"
+           maxlength="5000"
            placeholder="Nhập tin nhắn...">
 
     <button id="sendButton" disabled>Gửi tin nhắn</button>
 
     <h3>Tin nhắn</h3>
+
+    <p id="historyStatus" class="hint"></p>
+
     <div id="messages"></div>
 
     <button id="clearButton">Xóa nội dung hiển thị</button>
 </div>
 
 <script>
-const statusElement = document.getElementById("status");
-const messagesElement = document.getElementById("messages");
+    "use strict";
 
-const connectButton = document.getElementById("connectButton");
-const disconnectButton = document.getElementById("disconnectButton");
-const roomButton = document.getElementById("roomButton");
-const sendButton = document.getElementById("sendButton");
-const clearButton = document.getElementById("clearButton");
+    // ============================================================
+    // 1. LẤY CÁC PHẦN TỬ HTML
+    // ============================================================
 
-const usernameInput = document.getElementById("username");
-const passwordInput = document.getElementById("password");
-const conversationIdInput = document.getElementById("conversationId");
-const contentInput = document.getElementById("content");
+    const statusElement = document.getElementById("status");
+    const historyStatusElement = document.getElementById("historyStatus");
+    const messagesElement = document.getElementById("messages");
 
-let client = null;
-let jwtToken = null;
-let roomSubscription = null;
-let connected = false;
-let currentConversationId = null;
-let historyRequestId = 0;
+    const connectButton = document.getElementById("connectButton");
+    const disconnectButton = document.getElementById("disconnectButton");
+    const roomButton = document.getElementById("roomButton");
+    const sendButton = document.getElementById("sendButton");
+    const clearButton = document.getElementById("clearButton");
 
-// Lưu tin nhắn theo ID database để tránh trùng giữa REST và WebSocket.
-let messagesById = new Map();
+    const usernameInput = document.getElementById("username");
+    const passwordInput = document.getElementById("password");
+    const conversationIdInput = document.getElementById("conversationId");
+    const contentInput = document.getElementById("content");
 
-// Log phục vụ kiểm thử, không phải tin nhắn trong database.
-let systemLogs = [];
 
-// Hiển thị thông báo kiểm thử.
-function log(message) {
-    systemLogs.push(message);
-    renderMessages();
-}
+    // ============================================================
+    // 2. TRẠNG THÁI KẾT NỐI VÀ LỊCH SỬ CHAT
+    // ============================================================
 
-function setStatus(message) {
-    statusElement.textContent = message;
-}
+    let client = null;
+    let jwtToken = null;
+    let roomSubscription = null;
 
-// Kiểm tra Conversation ID phải là số nguyên dương.
-function getConversationId() {
-    const value = conversationIdInput.value.trim();
+    let connected = false;
+    let currentConversationId = null;
 
-    if (!/^[1-9]\d*$/.test(value)) {
-        throw new Error("Conversation ID phải là số nguyên dương.");
+    // Mỗi lần đổi phòng hoặc ngắt kết nối sẽ thay đổi mã này.
+    // Phản hồi của yêu cầu cũ sẽ bị bỏ qua.
+    let historyRequestId = 0;
+
+    // Lưu tin nhắn theo ID database để chống trùng REST/WebSocket.
+    let messagesById = new Map();
+
+    // Log kiểm thử, không phải tin nhắn trong database.
+    let systemLogs = [];
+
+    // Trang 0 chứa các tin nhắn mới nhất.
+    let oldestLoadedPage = 0;
+    const PAGE_SIZE = 20;
+
+    // Ngăn gửi nhiều yêu cầu tải trang cũ cùng lúc.
+    let isLoadingOlder = false;
+
+    // Cho biết còn trang lịch sử cũ hơn để tải hay không.
+    let hasMoreHistory = true;
+
+
+    // ============================================================
+    // 3. HÀM TIỆN ÍCH
+    // ============================================================
+
+    function setStatus(message) {
+        statusElement.textContent = message;
     }
 
-    return value;
-}
-
-// Chuẩn hóa dữ liệu từ REST và WebSocket về cùng một cấu trúc.
-function normalizeMessage(message) {
-    return {
-        id: message.id,
-        conversationId: message.conversationId,
-        sender: message.sender ?? message.senderUsername,
-        content: message.content,
-        createdAt: message.createdAt
-    };
-}
-
-// Thêm hoặc cập nhật tin nhắn theo ID database.
-function upsertMessage(rawMessage) {
-    const message = normalizeMessage(rawMessage);
-
-    if (message.id == null) {
-        log("Tin nhắn thiếu ID database, không thể loại trùng an toàn.");
-        return;
+    function setHistoryStatus(message) {
+        historyStatusElement.textContent = message;
     }
 
-    if (
-        String(message.conversationId) !==
-        String(currentConversationId)
-    ) {
-        return;
+    // Kiểm tra Conversation ID phải là số nguyên dương.
+    function getConversationId() {
+        const value = conversationIdInput.value.trim();
+
+        if (!/^[1-9]\d*$/.test(value)) {
+            throw new Error("Conversation ID phải là số nguyên dương.");
+        }
+
+        return value;
     }
 
-    // Map dùng ID làm khóa, nên cùng một tin nhắn chỉ có một bản ghi.
-    messagesById.set(String(message.id), message);
+    // Log kiểm thử được hiển thị phía dưới tin nhắn.
+    function log(message) {
+        systemLogs.push(message);
 
-    renderMessages();
-}
+        // Giới hạn số log để trang kiểm thử không phình vô hạn.
+        if (systemLogs.length > 100) {
+            systemLogs.shift();
+        }
 
-// Sắp xếp tin nhắn theo thời gian, sau đó theo ID nếu cùng thời điểm.
-function compareMessages(a, b) {
-    const timeA = Date.parse(a.createdAt);
-    const timeB = Date.parse(b.createdAt);
-
-    if (Number.isFinite(timeA) && Number.isFinite(timeB)
-            && timeA !== timeB) {
-        return timeA - timeB;
+        renderMessages();
     }
 
-    const idA = Number(a.id);
-    const idB = Number(b.id);
-
-    if (Number.isFinite(idA) && Number.isFinite(idB)) {
-        return idA - idB;
+    // Chuẩn hóa dữ liệu REST và WebSocket về cùng cấu trúc.
+    function normalizeMessage(message) {
+        return {
+            id: message.id,
+            conversationId: message.conversationId,
+            sender: message.sender ?? message.senderUsername ?? "Unknown",
+            content: message.content ?? "",
+            createdAt: message.createdAt ?? null
+        };
     }
 
-    return String(a.id).localeCompare(String(b.id));
-}
+    // Sắp xếp tin nhắn theo thời gian tăng dần.
+    // Nếu cùng thời gian thì dùng ID database để xác định thứ tự.
+    function compareMessages(a, b) {
+        const timeA = Date.parse(a.createdAt);
+        const timeB = Date.parse(b.createdAt);
 
-// Vẽ lại giao diện từ danh sách dữ liệu hiện có.
-function renderMessages() {
-    const messages = Array.from(messagesById.values())
-        .sort(compareMessages);
+        if (
+            Number.isFinite(timeA) &&
+            Number.isFinite(timeB) &&
+            timeA !== timeB
+        ) {
+            return timeA - timeB;
+        }
 
-    // Dùng textContent để không diễn giải nội dung chat thành HTML.
-    messagesElement.textContent = "";
+        const idA = Number(a.id);
+        const idB = Number(b.id);
 
-    for (const message of messages) {
-        const line = document.createElement("div");
+        if (Number.isFinite(idA) && Number.isFinite(idB)) {
+            return idA - idB;
+        }
 
-        line.textContent =
-            "[" + (message.createdAt ?? "Chưa có thời gian") + "] " +
-            message.sender + ": " + message.content;
-
-        messagesElement.appendChild(line);
+        return String(a.id).localeCompare(String(b.id));
     }
 
-    // Log kiểm thử được hiển thị riêng sau danh sách tin nhắn.
-    if (systemLogs.length > 0) {
-        const separator = document.createElement("hr");
-        messagesElement.appendChild(separator);
+    // Kiểm tra người dùng có đang ở gần cuối danh sách hay không.
+    function isNearBottom() {
+        const distanceFromBottom =
+            messagesElement.scrollHeight -
+            messagesElement.scrollTop -
+            messagesElement.clientHeight;
 
-        for (const entry of systemLogs) {
+        return distanceFromBottom < 80;
+    }
+
+
+    // ============================================================
+    // 4. HIỂN THỊ TIN NHẮN
+    // ============================================================
+
+    // scrollToBottom: cuộn xuống cuối danh sách.
+    // previousScrollHeight / previousScrollTop:
+    // giữ nguyên vị trí đọc sau khi thêm tin cũ lên trên.
+    function renderMessages(options = {}) {
+        const {
+            scrollToBottom = false,
+            previousScrollHeight = null,
+            previousScrollTop = null
+        } = options;
+
+        // Ghi nhớ vị trí trước khi dựng lại giao diện.
+        const oldHeight = previousScrollHeight ?? messagesElement.scrollHeight;
+        const oldTop = previousScrollTop ?? messagesElement.scrollTop;
+
+        const messages = Array.from(messagesById.values())
+            .sort(compareMessages);
+
+        // Xóa giao diện cũ rồi dựng lại từ dữ liệu trong Map.
+        messagesElement.textContent = "";
+
+        for (const message of messages) {
             const line = document.createElement("div");
-            line.className = "hint";
-            line.textContent = entry;
+            line.className = "message-line";
+
+            line.textContent =
+                "[" + (message.createdAt ?? "Chưa có thời gian") + "] " +
+                message.sender + ": " + message.content;
+
             messagesElement.appendChild(line);
         }
-    }
 
-    messagesElement.scrollTop = messagesElement.scrollHeight;
-}
+        // Hiển thị log kiểm thử riêng với tin nhắn.
+        if (systemLogs.length > 0) {
+            const separator = document.createElement("hr");
+            messagesElement.appendChild(separator);
 
-// Tải lịch sử bằng REST API.
-async function loadMessageHistory(conversationId, requestId) {
-    try {
-        setStatus("Đang tải lịch sử phòng " + conversationId + "...");
+            for (const entry of systemLogs) {
+                const line = document.createElement("div");
+                line.className = "hint";
+                line.textContent = entry;
 
-        const response = await fetch(
-            `/api/messages/conversation/${conversationId}?page=0&size=20`,
-            {
-                method: "GET",
-                headers: {
-                    Authorization: "Bearer " + jwtToken
-                }
+                messagesElement.appendChild(line);
             }
-        );
+        }
 
-        const result = await response.json();
+        if (scrollToBottom) {
+            // Dùng khi vào phòng lần đầu hoặc đang đọc gần cuối.
+            messagesElement.scrollTop = messagesElement.scrollHeight;
+        } else if (previousScrollHeight !== null) {
+            // Thêm tin cũ nhưng giữ nguyên nội dung đang đọc.
+            const heightDifference =
+                messagesElement.scrollHeight - oldHeight;
 
-        if (!response.ok) {
-            throw new Error(
-                result.message || "Không thể tải lịch sử tin nhắn."
+            messagesElement.scrollTop = oldTop + heightDifference;
+        } else {
+            // Render thông thường không tự kéo xuống cuối.
+            const maxScrollTop =
+                messagesElement.scrollHeight - messagesElement.clientHeight;
+
+            messagesElement.scrollTop = Math.min(
+                oldTop,
+                Math.max(0, maxScrollTop)
             );
         }
+    }
 
-        // Bỏ qua phản hồi cũ nếu người dùng đã đổi phòng hoặc đăng xuất.
+
+    // ============================================================
+    // 5. THÊM HOẶC CẬP NHẬT TIN NHẮN
+    // ============================================================
+
+    function upsertMessage(rawMessage) {
+        const message = normalizeMessage(rawMessage);
+
+        if (message.id == null) {
+            log("Tin nhắn thiếu ID database, không thể chống trùng an toàn.");
+            return;
+        }
+
         if (
-            requestId !== historyRequestId ||
-            String(currentConversationId) !== String(conversationId)
+            currentConversationId === null ||
+            String(message.conversationId) !== String(currentConversationId)
         ) {
             return;
         }
 
-        if (!Array.isArray(result.content)) {
-            throw new Error("Dữ liệu lịch sử không đúng định dạng.");
-        }
+        // Chỉ tự cuộn xuống nếu người dùng vốn đang ở gần cuối.
+        const shouldScrollToBottom = isNearBottom();
 
-        // Không xóa danh sách hiện tại.
-        // Tin nhắn realtime đã nhận sẽ được giữ lại.
-        // Tin trùng ID sẽ được cập nhật thay vì thêm lần nữa.
-        for (const message of result.content) {
-            upsertMessage(message);
-        }
+        // Dùng ID database làm khóa để tránh trùng tin nhắn.
+        messagesById.set(String(message.id), message);
 
-        log(
-            "Đã tải " + result.content.length +
-            " tin nhắn trong trang hiện tại."
-        );
-
-        setStatus("Đã kết nối, đang ở phòng " + conversationId);
-
-    } catch (error) {
-        if (
-            requestId !== historyRequestId ||
-            String(currentConversationId) !== String(conversationId)
-        ) {
-            return;
-        }
-
-        log("Lỗi tải lịch sử: " + error.message);
-        setStatus("Không tải được lịch sử phòng " + conversationId);
-    }
-}
-
-// Đăng ký nhận tin nhắn realtime.
-async function subscribeRoom() {
-    if (!connected || !client) {
-        log("Hãy kết nối WebSocket trước.");
-        return;
-    }
-
-    let conversationId;
-
-    try {
-        conversationId = getConversationId();
-    } catch (error) {
-        log(error.message);
-        return;
-    }
-
-    // Vô hiệu hóa yêu cầu tải lịch sử của phòng trước.
-    const requestId = ++historyRequestId;
-
-    if (roomSubscription) {
-        roomSubscription.unsubscribe();
-        roomSubscription = null;
-    }
-
-    currentConversationId = conversationId;
-
-    // Phòng mới có danh sách tin nhắn và log riêng.
-    messagesById.clear();
-    systemLogs = [];
-    renderMessages();
-
-    const destination = "/topic/conversations/" + conversationId;
-
-    try {
-        // Đăng ký trước để giảm nguy cơ bỏ lỡ tin nhắn mới.
-        roomSubscription = client.subscribe(destination, (frame) => {
-            try {
-                const message = JSON.parse(frame.body);
-
-                // Dữ liệu WebSocket có id và createdAt do backend cung cấp.
-                upsertMessage(message);
-
-            } catch (error) {
-                log("Không đọc được dữ liệu tin nhắn WebSocket.");
-            }
+        renderMessages({
+            scrollToBottom: shouldScrollToBottom
         });
-
-        log("Đã đăng ký nhận tin tại " + destination);
-
-        // Lịch sử và realtime cùng cập nhật messagesById.
-        await loadMessageHistory(conversationId, requestId);
-
-    } catch (error) {
-        log("Không thể vào phòng chat: " + error.message);
-    }
-}
-
-// Đăng nhập REST API rồi kết nối WebSocket bằng JWT.
-connectButton.onclick = async () => {
-    const username = usernameInput.value.trim();
-    const password = passwordInput.value;
-
-    if (!username || !password) {
-        log("Hãy nhập username và password.");
-        return;
     }
 
-    if (typeof StompJs === "undefined") {
-        log("Không tải được thư viện STOMP. Kiểm tra Internet.");
-        return;
-    }
 
-    connectButton.disabled = true;
-    setStatus("Đang đăng nhập...");
+    // ============================================================
+    // 6. TẢI LỊCH SỬ TIN NHẮN TỪ REST API
+    // ============================================================
 
-    try {
-        const response = await fetch("/api/auth/login", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ username, password })
-        });
-
-        const result = await response.json();
-
-        if (!response.ok || !result.success || !result.token) {
-            throw new Error(result.message || "Đăng nhập thất bại.");
-        }
-
-        jwtToken = result.token;
-
-        client = new StompJs.Client({
-            brokerURL: "ws://" + window.location.host + "/ws",
-
-            connectHeaders: {
-                Authorization: "Bearer " + jwtToken
-            },
-
-            reconnectDelay: 0,
-
-            debug: (message) => console.log("[STOMP]", message),
-
-            onConnect: () => {
-                connected = true;
-
-                disconnectButton.disabled = false;
-                roomButton.disabled = false;
-                sendButton.disabled = false;
-
-                passwordInput.value = "";
-
-                setStatus("Đăng nhập và kết nối thành công: " + result.username);
-                log("Đã xác thực và kết nối WebSocket.");
-
-                if (conversationIdInput.value.trim()) {
-                    subscribeRoom();
-                }
-            },
-
-            onStompError: (frame) => {
-                log("Lỗi STOMP: " + (frame.headers.message || "Không rõ"));
-            },
-
-            onWebSocketError: () => {
-                log("Lỗi WebSocket. Kiểm tra Console và server.");
-            },
-
-            onWebSocketClose: () => {
-                connected = false;
-                roomSubscription = null;
-                currentConversationId = null;
-                historyRequestId++;
-
-                disconnectButton.disabled = true;
-                roomButton.disabled = true;
-                sendButton.disabled = true;
-                connectButton.disabled = false;
-
-                setStatus("WebSocket đã ngắt kết nối.");
-            }
-        });
-
-        setStatus("Đăng nhập thành công, đang kết nối WebSocket...");
-        client.activate();
-
-    } catch (error) {
-        jwtToken = null;
-        setStatus("Không thể đăng nhập hoặc kết nối.");
-        log("Lỗi: " + error.message);
-        connectButton.disabled = false;
-    }
-};
-
-// Vào phòng hoặc chuyển phòng.
-roomButton.onclick = () => {
-    subscribeRoom();
-};
-
-// Gửi tin nhắn qua STOMP đến Spring Controller.
-sendButton.onclick = () => {
-    if (!connected || !client) {
-        log("WebSocket chưa kết nối.");
-        return;
-    }
-
-    let conversationId;
-
-    try {
-        conversationId = Number(getConversationId());
-    } catch (error) {
-        log(error.message);
-        return;
-    }
-
-    const content = contentInput.value.trim();
-
-    if (!content) {
-        log("Nội dung tin nhắn không được để trống.");
-        return;
-    }
-
-    if (
-        !roomSubscription ||
-        String(conversationId) !== String(currentConversationId)
+    async function loadMessageHistory(
+        conversationId,
+        requestId,
+        page = 0,
+        loadOlder = false
     ) {
-        log("Hãy vào đúng phòng chat trước.");
-        return;
+        // Không tải nếu đang có yêu cầu khác hoặc đã hết lịch sử.
+        if (loadOlder && (isLoadingOlder || !hasMoreHistory)) {
+            return;
+        }
+
+        if (loadOlder) {
+            isLoadingOlder = true;
+            setHistoryStatus("Đang tải tin nhắn cũ...");
+        }
+
+        try {
+            if (!loadOlder) {
+                setHistoryStatus("Đang tải lịch sử tin nhắn...");
+            }
+
+            // Ghi nhớ vị trí cuộn trước khi thêm tin cũ.
+            const previousScrollHeight = messagesElement.scrollHeight;
+            const previousScrollTop = messagesElement.scrollTop;
+
+            const response = await fetch(
+                `/api/messages/conversation/${conversationId}` +
+                `?page=${page}&size=${PAGE_SIZE}`,
+                {
+                    method: "GET",
+                    headers: {
+                        Authorization: "Bearer " + jwtToken
+                    }
+                }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    result.message || "Không thể tải lịch sử tin nhắn."
+                );
+            }
+
+            // Bỏ qua phản hồi của phòng cũ hoặc phiên cũ.
+            if (
+                requestId !== historyRequestId ||
+                String(currentConversationId) !== String(conversationId)
+            ) {
+                return;
+            }
+
+            if (!Array.isArray(result.content)) {
+                throw new Error("Dữ liệu lịch sử không đúng định dạng.");
+            }
+
+            // Thêm dữ liệu vào Map, không xóa tin realtime đã nhận.
+            for (const rawMessage of result.content) {
+                const message = normalizeMessage(rawMessage);
+
+                if (
+                    message.id != null &&
+                    String(message.conversationId) === String(conversationId)
+                ) {
+                    messagesById.set(String(message.id), message);
+                }
+            }
+
+            // Ghi nhận trang đã tải thành công.
+            oldestLoadedPage = page;
+
+            // Spring Page cho biết tổng số trang lịch sử.
+            hasMoreHistory = Number.isFinite(result.totalPages)
+                ? page + 1 < result.totalPages
+                : result.content.length === PAGE_SIZE;
+
+            if (loadOlder) {
+                // Thêm tin cũ mà không làm nhảy vị trí đang đọc.
+                renderMessages({
+                    previousScrollHeight,
+                    previousScrollTop
+                });
+
+                if (!hasMoreHistory) {
+                    setHistoryStatus("Đã tải hết lịch sử tin nhắn cũ.");
+                } else {
+                    setHistoryStatus(
+                        "Đã tải thêm " + result.content.length + " tin nhắn."
+                    );
+                }
+            } else {
+                // Lần đầu vào phòng: tải trang mới nhất rồi xuống cuối.
+                renderMessages({ scrollToBottom: true });
+
+                log(
+                    "Đã tải " + result.content.length +
+                    " tin nhắn ở trang " + page + "."
+                );
+
+                // Log vừa thêm có thể làm thay đổi chiều cao danh sách.
+                messagesElement.scrollTop = messagesElement.scrollHeight;
+
+                setHistoryStatus(
+                    hasMoreHistory
+                        ? "Cuộn lên đầu danh sách để tải tin nhắn cũ hơn."
+                        : "Đã tải hết lịch sử tin nhắn."
+                );
+
+                setStatus("Đã kết nối, đang ở phòng " + conversationId);
+            }
+
+        } catch (error) {
+            if (
+                requestId !== historyRequestId ||
+                String(currentConversationId) !== String(conversationId)
+            ) {
+                return;
+            }
+
+            setHistoryStatus(
+                loadOlder
+                    ? "Không tải được tin nhắn cũ."
+                    : "Không tải được lịch sử."
+            );
+
+            log(
+                (loadOlder ? "Lỗi tải tin cũ: " : "Lỗi tải lịch sử: ") +
+                error.message
+            );
+
+        } finally {
+            // Yêu cầu cũ không được thay đổi trạng thái tải của phòng mới.
+            if (requestId === historyRequestId) {
+                isLoadingOlder = false;
+            }
+        }
     }
 
-    client.publish({
-        destination: "/app/chat.send",
-        body: JSON.stringify({
-            conversationId,
-            content
-        })
+
+    // ============================================================
+    // 7. CUỘN LÊN ĐẦU ĐỂ TẢI THÊM TIN NHẮN CŨ
+    // ============================================================
+
+    messagesElement.addEventListener("scroll", () => {
+        if (
+            messagesElement.scrollTop <= 30 &&
+            connected &&
+            currentConversationId !== null &&
+            hasMoreHistory &&
+            !isLoadingOlder
+        ) {
+            // Trang tiếp theo chứa các tin cũ hơn trang vừa tải.
+            loadMessageHistory(
+                currentConversationId,
+                historyRequestId,
+                oldestLoadedPage + 1,
+                true
+            );
+        }
     });
 
-    contentInput.value = "";
-};
 
-// Nhấn Enter để gửi tin nhắn.
-contentInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
+    // ============================================================
+    // 8. VÀO PHÒNG VÀ ĐĂNG KÝ WEBSOCKET
+    // ============================================================
 
-        if (!sendButton.disabled) {
-            sendButton.click();
+    async function subscribeRoom() {
+        if (!connected || !client) {
+            log("Hãy kết nối WebSocket trước.");
+            return;
         }
-    }
-});
 
-// Ngắt kết nối và xóa JWT khỏi bộ nhớ trang.
-disconnectButton.onclick = async () => {
-    const activeClient = client;
+        let conversationId;
 
-    historyRequestId++;
-    currentConversationId = null;
-    roomSubscription = null;
-
-    connected = false;
-    jwtToken = null;
-    client = null;
-
-    messagesById.clear();
-    systemLogs = [];
-    renderMessages();
-
-    connectButton.disabled = false;
-    disconnectButton.disabled = true;
-    roomButton.disabled = true;
-    sendButton.disabled = true;
-
-    if (activeClient) {
         try {
-            await activeClient.deactivate();
+            conversationId = getConversationId();
         } catch (error) {
-            log("Lỗi khi ngắt kết nối: " + error.message);
+            log(error.message);
+            return;
+        }
+
+        // Vô hiệu hóa yêu cầu lịch sử của phòng trước.
+        const requestId = ++historyRequestId;
+
+        if (roomSubscription) {
+            roomSubscription.unsubscribe();
+            roomSubscription = null;
+        }
+
+        currentConversationId = conversationId;
+
+        // Reset dữ liệu và trạng thái phân trang cho phòng mới.
+        messagesById.clear();
+        systemLogs = [];
+
+        oldestLoadedPage = 0;
+        isLoadingOlder = false;
+        hasMoreHistory = true;
+
+        setHistoryStatus("");
+        renderMessages();
+
+        const destination = "/topic/conversations/" + conversationId;
+
+        try {
+            // Đăng ký realtime trước khi tải lịch sử.
+            roomSubscription = client.subscribe(destination, (frame) => {
+                try {
+                    const message = JSON.parse(frame.body);
+                    upsertMessage(message);
+                } catch (error) {
+                    log("Không đọc được dữ liệu tin nhắn WebSocket.");
+                }
+            });
+
+            log("Đã đăng ký nhận tin tại " + destination);
+
+            // Sau khi đăng ký realtime, tải trang lịch sử mới nhất.
+            await loadMessageHistory(conversationId, requestId, 0, false);
+
+        } catch (error) {
+            log("Không thể vào phòng chat: " + error.message);
         }
     }
 
-    setStatus("Đã ngắt kết nối.");
-    log("Đã ngắt kết nối WebSocket.");
-};
 
-// Xóa nội dung hiển thị và dữ liệu trong bộ nhớ trang.
-// Không xóa tin nhắn trong database.
-clearButton.onclick = () => {
-    // Vô hiệu hóa phản hồi lịch sử đang chờ để tránh dữ liệu cũ
-    // tự xuất hiện lại ngay sau khi bấm xóa.
-    historyRequestId++;
+    // ============================================================
+    // 9. ĐĂNG NHẬP VÀ KẾT NỐI WEBSOCKET
+    // ============================================================
 
-    messagesById.clear();
-    systemLogs = [];
-    renderMessages();
-};
+    connectButton.onclick = async () => {
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value;
+
+        if (!username || !password) {
+            log("Hãy nhập username và password.");
+            return;
+        }
+
+        if (typeof StompJs === "undefined") {
+            log("Không tải được thư viện STOMP. Hãy kiểm tra Internet.");
+            return;
+        }
+
+        connectButton.disabled = true;
+        setStatus("Đang đăng nhập...");
+
+        try {
+            // Đăng nhập REST API để nhận JWT.
+            const response = await fetch("/api/auth/login", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ username, password })
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success || !result.token) {
+                throw new Error(result.message || "Đăng nhập thất bại.");
+            }
+
+            jwtToken = result.token;
+
+            // Kết nối STOMP và gửi JWT trong CONNECT header.
+            client = new StompJs.Client({
+                brokerURL: "ws://" + window.location.host + "/ws",
+
+                connectHeaders: {
+                    Authorization: "Bearer " + jwtToken
+                },
+
+                reconnectDelay: 0,
+
+                debug: (message) => console.log("[STOMP]", message),
+
+                onConnect: () => {
+                    connected = true;
+
+                    disconnectButton.disabled = false;
+                    roomButton.disabled = false;
+                    sendButton.disabled = false;
+
+                    passwordInput.value = "";
+
+                    setStatus(
+                        "Đăng nhập và kết nối thành công: " + result.username
+                    );
+
+                    log("Đã xác thực và kết nối WebSocket.");
+
+                    // Nếu đã nhập Conversation ID, tự động vào phòng.
+                    if (conversationIdInput.value.trim()) {
+                        subscribeRoom();
+                    }
+                },
+
+                onStompError: (frame) => {
+                    log(
+                        "Lỗi STOMP: " +
+                        (frame.headers.message || "Không rõ")
+                    );
+                },
+
+                onWebSocketError: () => {
+                    log("Lỗi WebSocket. Kiểm tra Console và server.");
+                },
+
+                onWebSocketClose: () => {
+                    connected = false;
+                    roomSubscription = null;
+                    currentConversationId = null;
+
+                    // Vô hiệu hóa phản hồi lịch sử đang chờ.
+                    historyRequestId++;
+
+                    isLoadingOlder = false;
+                    hasMoreHistory = false;
+                    oldestLoadedPage = 0;
+
+                    disconnectButton.disabled = true;
+                    roomButton.disabled = true;
+                    sendButton.disabled = true;
+                    connectButton.disabled = false;
+
+                    setHistoryStatus("");
+                    setStatus("WebSocket đã ngắt kết nối.");
+                }
+            });
+
+            setStatus("Đăng nhập thành công, đang kết nối WebSocket...");
+            client.activate();
+
+        } catch (error) {
+            jwtToken = null;
+
+            setStatus("Không thể đăng nhập hoặc kết nối.");
+            log("Lỗi: " + error.message);
+
+            connectButton.disabled = false;
+        }
+    };
+
+
+    // ============================================================
+    // 10. ĐỔI PHÒNG CHAT
+    // ============================================================
+
+    roomButton.onclick = () => {
+        subscribeRoom();
+    };
+
+
+    // ============================================================
+    // 11. GỬI TIN NHẮN QUA STOMP
+    // ============================================================
+
+    sendButton.onclick = () => {
+        if (!connected || !client) {
+            log("WebSocket chưa kết nối.");
+            return;
+        }
+
+        let conversationId;
+
+        try {
+            conversationId = Number(getConversationId());
+        } catch (error) {
+            log(error.message);
+            return;
+        }
+
+        const content = contentInput.value.trim();
+
+        if (!content) {
+            log("Nội dung tin nhắn không được để trống.");
+            return;
+        }
+
+        if (
+            !roomSubscription ||
+            String(conversationId) !== String(currentConversationId)
+        ) {
+            log("Hãy vào đúng phòng chat trước.");
+            return;
+        }
+
+        // Server xác thực thành viên và lưu tin nhắn vào database.
+        client.publish({
+            destination: "/app/chat.send",
+            body: JSON.stringify({
+                conversationId,
+                content
+            })
+        });
+
+        contentInput.value = "";
+    };
+
+
+    // Nhấn Enter để gửi tin nhắn.
+    contentInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+
+            if (!sendButton.disabled) {
+                sendButton.click();
+            }
+        }
+    });
+
+
+    // ============================================================
+    // 12. NGẮT KẾT NỐI
+    // ============================================================
+
+    disconnectButton.onclick = async () => {
+        const activeClient = client;
+
+        // Vô hiệu hóa các yêu cầu tải lịch sử đang chờ.
+        historyRequestId++;
+
+        if (roomSubscription) {
+            roomSubscription.unsubscribe();
+        }
+
+        roomSubscription = null;
+        currentConversationId = null;
+
+        connected = false;
+        jwtToken = null;
+        client = null;
+
+        messagesById.clear();
+        systemLogs = [];
+
+        oldestLoadedPage = 0;
+        isLoadingOlder = false;
+        hasMoreHistory = false;
+
+        renderMessages();
+        setHistoryStatus("");
+
+        connectButton.disabled = false;
+        disconnectButton.disabled = true;
+        roomButton.disabled = true;
+        sendButton.disabled = true;
+
+        if (activeClient) {
+            try {
+                await activeClient.deactivate();
+            } catch (error) {
+                log("Lỗi khi ngắt kết nối: " + error.message);
+            }
+        }
+
+        setStatus("Đã ngắt kết nối.");
+        log("Đã ngắt kết nối WebSocket.");
+    };
+
+
+    // ============================================================
+    // 13. XÓA NỘI DUNG HIỂN THỊ
+    // ============================================================
+
+    // Chỉ xóa dữ liệu trong bộ nhớ trang, không xóa dữ liệu MySQL.
+    clearButton.onclick = () => {
+        // Vô hiệu hóa phản hồi lịch sử đang chờ.
+        historyRequestId++;
+
+        messagesById.clear();
+        systemLogs = [];
+
+        oldestLoadedPage = 0;
+        isLoadingOlder = false;
+
+        // Không tự tải lại cho đến khi người dùng vào lại phòng.
+        hasMoreHistory = false;
+
+        setHistoryStatus(
+            "Đã xóa nội dung hiển thị. Vào lại phòng để tải lịch sử."
+        );
+
+        renderMessages();
+        setStatus("Đã xóa nội dung hiển thị.");
+    };
 </script>
 </body>
 </html>
-```
