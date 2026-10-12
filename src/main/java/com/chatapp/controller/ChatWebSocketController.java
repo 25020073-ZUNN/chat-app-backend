@@ -3,6 +3,7 @@ package com.chatapp.controller;
 import com.chatapp.dto.SendMessageRequest;
 import com.chatapp.entity.Message;
 import com.chatapp.service.MessageService;
+
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
@@ -18,7 +19,7 @@ public class ChatWebSocketController {
     private final MessageService messageService;
     private final SimpMessagingTemplate messagingTemplate;
 
-    // Spring tự động cung cấp service và công cụ phát message.
+    // Spring tự động cung cấp Service và công cụ phát message.
     public ChatWebSocketController(
             MessageService messageService,
             SimpMessagingTemplate messagingTemplate
@@ -27,20 +28,13 @@ public class ChatWebSocketController {
         this.messagingTemplate = messagingTemplate;
     }
 
-    // Nhận message từ client qua /app/chat.send.
+    // Nhận tin nhắn mới từ client qua /app/chat.send.
     @MessageMapping("/chat.send")
     public void sendMessage(
             @Payload ChatMessage request,
             SimpMessageHeaderAccessor headerAccessor
     ) {
-        // Danh tính phải đến từ phiên WebSocket đã xác thực JWT.
-        Principal principal = headerAccessor.getUser();
-
-        if (principal == null) {
-            throw new IllegalStateException(
-                    "WebSocket chưa được xác thực"
-            );
-        }
+        Principal principal = getAuthenticatedUser(headerAccessor);
 
         // Kiểm tra dữ liệu đầu vào.
         if (request.getConversationId() == null
@@ -51,57 +45,150 @@ public class ChatWebSocketController {
             );
         }
 
-        // Tạo request dùng chung với REST API hiện có.
+        // Tạo request dùng chung với REST API.
         SendMessageRequest sendRequest = new SendMessageRequest();
         sendRequest.setConversationId(request.getConversationId());
         sendRequest.setContent(request.getContent());
 
-        // Service kiểm tra quyền thành viên và lưu vào database.
+        // Service kiểm tra quyền thành viên và lưu tin nhắn.
         Message savedMessage = messageService.sendMessage(
                 principal.getName(),
                 sendRequest
         );
 
-        // Chỉ phát vào phòng chat tương ứng.
-        String destination = "/topic/conversations/"
-                + savedMessage.getConversation().getId();
-
-        // Phát dữ liệu lấy từ bản ghi đã lưu thành công.
-        ChatMessage response = new ChatMessage(
-                savedMessage.getId(),
-                savedMessage.getConversation().getId(),
-                savedMessage.getSender().getUsername(),
-                savedMessage.getContent(),
-                savedMessage.getCreatedAt()
+        // Phát sự kiện đến đúng phòng chat.
+        ChatMessage response = toEvent(
+                savedMessage,
+                "MESSAGE_CREATED"
         );
 
-        messagingTemplate.convertAndSend(destination, response);
+        broadcast(response);
     }
 
-    // DTO dùng để nhận dữ liệu gửi lên và phát dữ liệu xuống.
+    // Sửa tin nhắn qua /app/chat.edit.
+    // Client gửi: {"messageId": 1, "content": "Nội dung mới"}
+    @MessageMapping("/chat.edit")
+    public void editMessage(
+            @Payload EditChatMessage request,
+            SimpMessageHeaderAccessor headerAccessor
+    ) {
+        Principal principal = getAuthenticatedUser(headerAccessor);
+
+        if (request == null
+                || request.getMessageId() == null
+                || request.getContent() == null
+                || request.getContent().isBlank()) {
+            throw new IllegalArgumentException(
+                    "Message ID và nội dung mới là bắt buộc"
+            );
+        }
+
+        // Service kiểm tra quyền sở hữu và cập nhật database.
+        Message updatedMessage = messageService.editMessage(
+                principal.getName(),
+                request.getMessageId(),
+                request.getContent()
+        );
+
+        // Báo cho các client trong phòng biết tin nhắn đã thay đổi.
+        ChatMessage response = toEvent(
+                updatedMessage,
+                "MESSAGE_UPDATED"
+        );
+
+        broadcast(response);
+    }
+
+    // Xóa tin nhắn qua /app/chat.delete.
+    // Client gửi: {"messageId": 1}
+    @MessageMapping("/chat.delete")
+    public void deleteMessage(
+            @Payload DeleteChatMessage request,
+            SimpMessageHeaderAccessor headerAccessor
+    ) {
+        Principal principal = getAuthenticatedUser(headerAccessor);
+
+        if (request == null || request.getMessageId() == null) {
+            throw new IllegalArgumentException(
+                    "Message ID là bắt buộc"
+            );
+        }
+
+        // Service kiểm tra quyền sở hữu và đánh dấu tin nhắn đã xóa.
+        Message deletedMessage = messageService.deleteMessage(
+                principal.getName(),
+                request.getMessageId()
+        );
+
+        // Không phát lại nội dung đã xóa cho các client.
+        ChatMessage response = new ChatMessage();
+        response.setType("MESSAGE_DELETED");
+        response.setId(deletedMessage.getId());
+        response.setConversationId(
+                deletedMessage.getConversation().getId()
+        );
+
+        broadcast(response);
+    }
+
+    // Lấy danh tính từ phiên WebSocket đã xác thực JWT.
+    private Principal getAuthenticatedUser(
+            SimpMessageHeaderAccessor headerAccessor
+    ) {
+        Principal principal = headerAccessor.getUser();
+
+        if (principal == null) {
+            throw new IllegalStateException(
+                    "WebSocket chưa được xác thực"
+            );
+        }
+
+        return principal;
+    }
+
+    // Chuyển Message entity thành dữ liệu gửi cho client.
+    private ChatMessage toEvent(Message message, String type) {
+        ChatMessage response = new ChatMessage();
+
+        response.setType(type);
+        response.setId(message.getId());
+        response.setConversationId(message.getConversation().getId());
+        response.setSender(message.getSender().getUsername());
+        response.setContent(message.getContent());
+        response.setCreatedAt(message.getCreatedAt());
+        response.setEditedAt(message.getEditedAt());
+
+        return response;
+    }
+
+    // Phát sự kiện đến tất cả client đăng ký topic của phòng chat.
+    private void broadcast(ChatMessage message) {
+        String destination = "/topic/conversations/"
+                + message.getConversationId();
+
+        messagingTemplate.convertAndSend(destination, message);
+    }
+
+    // DTO nhận dữ liệu từ client và phát sự kiện xuống client.
     public static class ChatMessage {
 
+        private String type;
         private Long id;
         private Long conversationId;
         private String sender;
         private String content;
         private LocalDateTime createdAt;
+        private LocalDateTime editedAt;
 
         public ChatMessage() {
         }
 
-        public ChatMessage(
-                Long id,
-                Long conversationId,
-                String sender,
-                String content,
-                LocalDateTime createdAt
-        ) {
-            this.id = id;
-            this.conversationId = conversationId;
-            this.sender = sender;
-            this.content = content;
-            this.createdAt = createdAt;
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
         }
 
         public Long getId() {
@@ -142,6 +229,57 @@ public class ChatWebSocketController {
 
         public void setCreatedAt(LocalDateTime createdAt) {
             this.createdAt = createdAt;
+        }
+
+        public LocalDateTime getEditedAt() {
+            return editedAt;
+        }
+
+        public void setEditedAt(LocalDateTime editedAt) {
+            this.editedAt = editedAt;
+        }
+    }
+
+    // DTO nhận yêu cầu sửa tin nhắn qua WebSocket.
+    public static class EditChatMessage {
+
+        private Long messageId;
+        private String content;
+
+        public EditChatMessage() {
+        }
+
+        public Long getMessageId() {
+            return messageId;
+        }
+
+        public void setMessageId(Long messageId) {
+            this.messageId = messageId;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public void setContent(String content) {
+            this.content = content;
+        }
+    }
+
+    // DTO nhận yêu cầu xóa tin nhắn qua WebSocket.
+    public static class DeleteChatMessage {
+
+        private Long messageId;
+
+        public DeleteChatMessage() {
+        }
+
+        public Long getMessageId() {
+            return messageId;
+        }
+
+        public void setMessageId(Long messageId) {
+            this.messageId = messageId;
         }
     }
 }

@@ -1,3 +1,4 @@
+
 package com.chatapp.service;
 
 import com.chatapp.dto.SendMessageRequest;
@@ -14,9 +15,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.time.LocalDateTime;
-
 @Service
 public class MessageService {
 
@@ -77,20 +76,18 @@ public class MessageService {
         );
     }
 
-    // Xử lý nghiệp vụ gửi tin nhắn.
+    // Gửi tin nhắn mới.
     @Transactional
     public Message sendMessage(
             String currentUsername,
             SendMessageRequest request
     ) {
-        // Bước 1: Tìm người gửi dựa trên tài khoản đã xác thực.
         User sender = userRepository.findByUsername(currentUsername)
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.UNAUTHORIZED,
                         "Không tìm thấy người gửi"
                 ));
 
-        // Bước 2: Tìm cuộc trò chuyện cần gửi tin nhắn.
         Conversation conversation = conversationRepository
                 .findById(request.getConversationId())
                 .orElseThrow(() -> new ResponseStatusException(
@@ -98,7 +95,7 @@ public class MessageService {
                         "Không tìm thấy cuộc trò chuyện"
                 ));
 
-        // Bước 3: Kiểm tra người gửi có phải thành viên không.
+        // Kiểm tra người gửi có phải thành viên không.
         boolean isMember =
                 memberRepository.existsByConversation_IdAndUser_Id(
                         conversation.getId(),
@@ -112,20 +109,98 @@ public class MessageService {
             );
         }
 
-        // Bước 4: Tạo tin nhắn mới.
         Message message = new Message(
                 conversation,
                 sender,
                 request.getContent().trim()
         );
 
-        // Bước 5: Lưu tin nhắn vào database.
         Message savedMessage = messageRepository.save(message);
 
-        // Bước 6: Cập nhật thời gian hoạt động của cuộc trò chuyện.
+        // Cập nhật hoạt động gần nhất của cuộc trò chuyện.
         conversation.setUpdatedAt(LocalDateTime.now());
 
-        // Bước 7: Trả về tin nhắn đã lưu.
         return savedMessage;
+    }
+
+    // Sửa nội dung tin nhắn của chính mình.
+    @Transactional
+    public Message editMessage(
+            String currentUsername,
+            Long messageId,
+            String newContent
+    ) {
+        Message message = findOwnActiveMessage(currentUsername, messageId);
+
+        String content = newContent == null ? "" : newContent.trim();
+        if (content.isEmpty()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Nội dung tin nhắn không được để trống"
+            );
+        }
+
+        // Cập nhật nội dung và thời điểm sửa.
+        message.setContent(content);
+        message.setEditedAt(LocalDateTime.now());
+
+        // Cập nhật thời gian hoạt động của cuộc trò chuyện.
+        message.getConversation().setUpdatedAt(LocalDateTime.now());
+
+        return message;
+    }
+
+    // Xóa mềm tin nhắn của chính mình.
+    @Transactional
+    public Message deleteMessage(
+            String currentUsername,
+            Long messageId
+    ) {
+        Message message = findOwnActiveMessage(currentUsername, messageId);
+
+        // Không xóa bản ghi khỏi database, chỉ đánh dấu đã xóa.
+        message.setDeletedAt(LocalDateTime.now());
+
+        // Cập nhật thời gian hoạt động của cuộc trò chuyện.
+        message.getConversation().setUpdatedAt(LocalDateTime.now());
+
+        return message;
+    }
+
+    // Tìm tin nhắn chưa bị xóa và xác minh quyền sở hữu.
+    private Message findOwnActiveMessage(
+            String currentUsername,
+            Long messageId
+    ) {
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Không tìm thấy tin nhắn"
+                ));
+
+        if (message.getDeletedAt() != null) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    "Tin nhắn đã bị xóa"
+            );
+        }
+
+        if (!message.getSender().getUsername().equals(currentUsername)) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Bạn chỉ được sửa hoặc xóa tin nhắn của chính mình"
+            );
+        }
+        // Chỉ cho phép sửa hoặc xóa trong vòng 5 phút kể từ khi gửi.
+        LocalDateTime deadline = message.getCreatedAt().plusMinutes(5);
+
+        if (LocalDateTime.now().isAfter(deadline)) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Đã quá 5 phút, không thể sửa hoặc xóa tin nhắn."
+            );
+        }
+
+        return message;
     }
 }

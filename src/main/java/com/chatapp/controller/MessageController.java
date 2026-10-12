@@ -1,5 +1,6 @@
 package com.chatapp.controller;
 
+import com.chatapp.dto.EditMessageRequest;
 import com.chatapp.dto.MessageResponse;
 import com.chatapp.dto.SendMessageRequest;
 import com.chatapp.entity.Message;
@@ -23,39 +24,31 @@ public class MessageController {
 
     private final MessageService messageService;
 
-    // Spring tự động inject MessageService.
     public MessageController(MessageService messageService) {
         this.messageService = messageService;
     }
 
-    // API gửi tin nhắn.
+    // Gửi một tin nhắn mới.
+    // POST /api/messages
     @PostMapping
     public ResponseEntity<MessageResponse> sendMessage(
             @Valid @RequestBody SendMessageRequest request,
             Authentication authentication
     ) {
-        // Lấy username từ JWT đã được Spring Security xác thực.
         String currentUsername = authentication.getName();
 
-        // Gọi Service xử lý nghiệp vụ gửi tin nhắn.
         Message message = messageService.sendMessage(
                 currentUsername,
                 request
         );
 
-        // Chuyển Entity thành DTO để trả về client.
-        MessageResponse response = new MessageResponse(
-                message.getId(),
-                message.getConversation().getId(),
-                message.getSender().getUsername(),
-                message.getContent(),
-                message.getCreatedAt()
-        );
+        MessageResponse response = toResponse(message);
 
         return ResponseEntity.ok(response);
     }
 
-    // API lấy lịch sử tin nhắn theo từng trang.
+    // Lấy lịch sử tin nhắn của một cuộc trò chuyện theo từng trang.
+    // GET /api/messages/conversation/{conversationId}?page=0&size=20
     @GetMapping("/conversation/{conversationId}")
     public ResponseEntity<Page<MessageResponse>> getConversationMessages(
             @PathVariable Long conversationId,
@@ -63,7 +56,7 @@ public class MessageController {
             @RequestParam(defaultValue = "20") int size,
             Authentication authentication
     ) {
-        // Giới hạn đầu vào để tránh yêu cầu quá nhiều dữ liệu.
+        // Kiểm tra tham số phân trang hợp lệ.
         if (page < 0 || size < 1 || size > 100) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
@@ -71,11 +64,9 @@ public class MessageController {
             );
         }
 
-        // Lấy username từ JWT.
         String currentUsername = authentication.getName();
 
         // Lấy tin nhắn mới nhất trước.
-        // Nếu cùng thời gian, sắp xếp theo ID giảm dần.
         Pageable pageable = PageRequest.of(
                 page,
                 size,
@@ -85,24 +76,66 @@ public class MessageController {
                 )
         );
 
-        // Gọi Service lấy trang tin nhắn sau khi kiểm tra quyền.
-        Page<Message> messages = messageService.getConversationMessages(
-                currentUsername,
-                conversationId,
-                pageable
-        );
+        Page<Message> messages =
+                messageService.getConversationMessages(
+                        currentUsername,
+                        conversationId,
+                        pageable
+                );
 
-        // Chuyển các Entity trong trang thành DTO.
-        Page<MessageResponse> response = messages.map(message ->
-                new MessageResponse(
-                        message.getId(),
-                        message.getConversation().getId(),
-                        message.getSender().getUsername(),
-                        message.getContent(),
-                        message.getCreatedAt()
-                )
-        );
+        // Chuyển từng Message entity thành dữ liệu trả về cho client.
+        Page<MessageResponse> response = messages.map(this::toResponse);
 
         return ResponseEntity.ok(response);
+    }
+
+    // Sửa nội dung tin nhắn của chính người gửi.
+    // PUT /api/messages/{messageId}
+    // Body: {"content": "Nội dung mới"}
+    @PutMapping("/{messageId}")
+    public ResponseEntity<MessageResponse> editMessage(
+            @PathVariable Long messageId,
+            @Valid @RequestBody EditMessageRequest request,
+            Authentication authentication
+    ) {
+        String currentUsername = authentication.getName();
+
+        Message message = messageService.editMessage(
+                currentUsername,
+                messageId,
+                request.getContent()
+        );
+
+        return ResponseEntity.ok(toResponse(message));
+    }
+
+    // Xóa tin nhắn của chính người gửi.
+    // DELETE /api/messages/{messageId}
+    @DeleteMapping("/{messageId}")
+    public ResponseEntity<Void> deleteMessage(
+            @PathVariable Long messageId,
+            Authentication authentication
+    ) {
+        String currentUsername = authentication.getName();
+
+        messageService.deleteMessage(
+                currentUsername,
+                messageId
+        );
+
+        // HTTP 204: thao tác thành công, không cần trả nội dung.
+        return ResponseEntity.noContent().build();
+    }
+
+    // Gom logic chuyển entity thành response để tránh viết lặp.
+    private MessageResponse toResponse(Message message) {
+        return new MessageResponse(
+                message.getId(),
+                message.getConversation().getId(),
+                message.getSender().getUsername(),
+                message.getContent(),
+                message.getCreatedAt(),
+                message.getEditedAt()
+        );
     }
 }
