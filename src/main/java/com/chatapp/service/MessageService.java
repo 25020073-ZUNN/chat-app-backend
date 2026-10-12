@@ -14,7 +14,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-import java.util.List;
+
+import java.time.LocalDateTime;
+
 @Service
 public class MessageService {
 
@@ -35,7 +37,7 @@ public class MessageService {
         this.memberRepository = memberRepository;
         this.userRepository = userRepository;
     }
-    // Lấy lịch sử tin nhắn của một cuộc trò chuyện.
+
     // Lấy lịch sử tin nhắn theo từng trang.
     @Transactional(readOnly = true)
     public Page<Message> getConversationMessages(
@@ -55,6 +57,7 @@ public class MessageService {
                         "Không tìm thấy cuộc trò chuyện"
                 ));
 
+        // Chỉ thành viên của cuộc trò chuyện mới được xem lịch sử.
         boolean isMember =
                 memberRepository.existsByConversation_IdAndUser_Id(
                         conversationId,
@@ -73,6 +76,7 @@ public class MessageService {
                 pageable
         );
     }
+
     // Xử lý nghiệp vụ gửi tin nhắn.
     @Transactional
     public Message sendMessage(
@@ -116,6 +120,12 @@ public class MessageService {
         );
 
         // Bước 5: Lưu tin nhắn vào database.
-        return messageRepository.save(message);
+        Message savedMessage = messageRepository.save(message);
+
+        // Bước 6: Cập nhật thời gian hoạt động của cuộc trò chuyện.
+        conversation.setUpdatedAt(LocalDateTime.now());
+
+        // Bước 7: Trả về tin nhắn đã lưu.
+        return savedMessage;
     }
 }

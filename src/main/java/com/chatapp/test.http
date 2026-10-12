@@ -1,2 +1,3 @@
-GET http://localhost:8080/api/messages/conversation/3?page=0&size=20
-Authorization: Bearer eyJhbGciOiJIUzM4NCJ9.eyJzdWIiOiJadW5WTiIsImlhdCI6MTc5MTgwMTAzOCwiZXhwIjoxNzkxODA0NjM4fQ.tk4eo_mTI1744Jd8S_xj-BY-CgnfuRT4Cg32t_cM-hZp3LxG_YwunRNWSjo0NsnB
+### Kiểm tra danh sách cuộc trò chuyện
+GET http://localhost:8080/api/conversations
+Authorization: Bearer eyJhbGciOiJIUzM4NCJ9.eyJzdWIiOiJadW5WTiIsImlhdCI6MTc5MTgxMDgwOSwiZXhwIjoxNzkxODE0NDA5fQ.Q0lmz69Y1gKfb___c5IzZd1O2uzcMYT67JLxczXcRq-F-wHoa61v2nUtDPJ_p61j

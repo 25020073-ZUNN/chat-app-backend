@@ -1,4 +1,3 @@
-
 package com.chatapp.dto;
 
 import com.chatapp.entity.ConversationType;
@@ -10,6 +9,8 @@ public record ConversationResponse(
         Long conversationId,
         ConversationType conversationType,
         String name,
+        String participantUsername,
+        String lastMessage,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {

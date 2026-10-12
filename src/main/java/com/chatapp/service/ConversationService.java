@@ -5,11 +5,13 @@ import com.chatapp.entity.Conversation;
 import com.chatapp.entity.ConversationMember;
 import com.chatapp.entity.ConversationType;
 import com.chatapp.entity.MemberRole;
+import com.chatapp.entity.Message;
 import com.chatapp.entity.User;
 import com.chatapp.repository.ConversationMemberRepository;
 import com.chatapp.repository.ConversationRepository;
+import com.chatapp.repository.MessageRepository;
 import com.chatapp.repository.UserRepository;
-
+import java.util.Comparator;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,19 +26,22 @@ public class ConversationService {
     private final ConversationRepository conversationRepository;
     private final ConversationMemberRepository memberRepository;
     private final UserRepository userRepository;
+    private final MessageRepository messageRepository;
 
     // Spring tự truyền các Repository vào Service.
     public ConversationService(
             ConversationRepository conversationRepository,
             ConversationMemberRepository memberRepository,
-            UserRepository userRepository
+            UserRepository userRepository,
+            MessageRepository messageRepository
     ) {
         this.conversationRepository = conversationRepository;
         this.memberRepository = memberRepository;
         this.userRepository = userRepository;
+        this.messageRepository = messageRepository;
     }
 
-    // Lấy danh sách cuộc trò chuyện của người đang đăng nhập.
+// Lấy danh sách cuộc trò chuyện của người đang đăng nhập.
     @Transactional(readOnly = true)
     public List<ConversationResponse> getMyConversations(String username) {
 
@@ -44,9 +49,15 @@ public class ConversationService {
         List<ConversationMember> members =
                 memberRepository.findByUser_Username(username);
 
-        // Chuyển dữ liệu entity thành DTO để trả về client.
+        // Chuyển entity thành DTO, sau đó sắp xếp theo thời gian hoạt động.
         return members.stream()
-                .map(member -> toResponse(member.getConversation()))
+                .map(member -> toResponse(member.getConversation(), username))
+                .sorted(
+                        Comparator.comparing(
+                                ConversationResponse::updatedAt,
+                                Comparator.nullsLast(Comparator.reverseOrder())
+                        )
+                )
                 .toList();
     }
 
@@ -87,7 +98,7 @@ public class ConversationService {
                 );
 
         if (existingConversation.isPresent()) {
-            return toResponse(existingConversation.get());
+            return toResponse(existingConversation.get(), currentUsername);
         }
 
         // 5. Tạo cuộc trò chuyện mới.
@@ -102,14 +113,13 @@ public class ConversationService {
         // Lưu trước để lấy ID cuộc trò chuyện.
         conversation = conversationRepository.save(conversation);
 
-        // 6. Thêm người đang đăng nhập vào cuộc trò chuyện.
+        // 6. Thêm hai người vào cuộc trò chuyện.
         ConversationMember currentMember = new ConversationMember(
                 conversation,
                 currentUser,
                 MemberRole.MEMBER
         );
 
-        // Thêm người còn lại.
         ConversationMember participantMember = new ConversationMember(
                 conversation,
                 participant,
@@ -120,14 +130,48 @@ public class ConversationService {
         memberRepository.save(participantMember);
 
         // 7. Trả về DTO.
-        return toResponse(conversation);
+        return toResponse(conversation, currentUsername);
     }
+
     // Chuyển entity Conversation thành DTO phản hồi.
-    private ConversationResponse toResponse(Conversation conversation) {
+    private ConversationResponse toResponse(
+            Conversation conversation,
+            String currentUsername
+    ) {
+        String participantUsername = null;
+        String lastMessage = null;
+
+        // Với phòng DIRECT, tìm username của người còn lại.
+        if (conversation.getConversationType() == ConversationType.DIRECT) {
+
+            List<ConversationMember> members =
+                    memberRepository.findByConversation_Id(conversation.getId());
+
+            participantUsername = members.stream()
+                    .map(ConversationMember::getUser)
+                    .map(User::getUsername)
+                    .filter(name -> !name.equals(currentUsername))
+                    .findFirst()
+                    .orElse(null);
+        }
+
+        // Lấy tin nhắn mới nhất chưa bị xóa, nếu có.
+        Message latestMessage = messageRepository
+                .findFirstByConversation_IdAndDeletedAtIsNullOrderByCreatedAtDescIdDesc(
+                        conversation.getId()
+                )
+                .orElse(null);
+
+        if (latestMessage != null) {
+            lastMessage = latestMessage.getContent();
+        }
+
         return new ConversationResponse(
                 conversation.getId(),
                 conversation.getConversationType(),
                 conversation.getName(),
+                participantUsername,
+                lastMessage,
                 conversation.getCreatedAt(),
                 conversation.getUpdatedAt()
         );

@@ -2,7 +2,7 @@
 package com.chatapp.repository;
 
 import com.chatapp.entity.Message;
-
+import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
@@ -26,4 +26,10 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
 
     // Lấy tin nhắn của một user.
     List<Message> findBySender_Id(Long senderId);
+// Lấy tin nhắn mới nhất chưa bị xóa trong một cuộc trò chuyện.
+    @EntityGraph(attributePaths = {"sender"})
+    Optional<Message> findFirstByConversation_IdAndDeletedAtIsNullOrderByCreatedAtDescIdDesc(
+            Long conversationId
+    );
+
 }
