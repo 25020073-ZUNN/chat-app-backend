@@ -1,10 +1,15 @@
 
 package com.chatapp.config;
 
+import com.chatapp.entity.Conversation;
 import com.chatapp.entity.User;
 import com.chatapp.repository.ConversationMemberRepository;
+import com.chatapp.repository.ConversationRepository;
+import com.chatapp.repository.MessageRepository;
 import com.chatapp.repository.UserRepository;
 import com.chatapp.service.JwtService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
@@ -17,6 +22,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.stereotype.Component;
 
 import java.security.Principal;
+import java.io.IOException;
 import java.util.Collections;
 
 @Component
@@ -25,14 +31,23 @@ public class WebSocketAuthInterceptor implements ChannelInterceptor {
     private final JwtService jwtService;
     private final UserRepository userRepository;
     private final ConversationMemberRepository memberRepository;
+    private final ConversationRepository conversationRepository;
+    private final MessageRepository messageRepository;
+    private final ObjectMapper objectMapper;
 
     public WebSocketAuthInterceptor(
             JwtService jwtService,
             UserRepository userRepository,
-            ConversationMemberRepository memberRepository) {
+            ConversationMemberRepository memberRepository,
+            ConversationRepository conversationRepository,
+            MessageRepository messageRepository,
+            ObjectMapper objectMapper) {
         this.jwtService = jwtService;
         this.userRepository = userRepository;
         this.memberRepository = memberRepository;
+        this.conversationRepository = conversationRepository;
+        this.messageRepository = messageRepository;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -83,6 +98,10 @@ public class WebSocketAuthInterceptor implements ChannelInterceptor {
 
             String destination = accessor.getDestination();
 
+            if ("/user/queue/conversations".equals(destination)) {
+                return message;
+            }
+
             // Chỉ cho phép subscribe vào topic conversation hợp lệ.
             String prefix = "/topic/conversations/";
 
@@ -108,21 +127,70 @@ public class WebSocketAuthInterceptor implements ChannelInterceptor {
             }
 
             // Lấy danh tính từ JWT, không tin username do client tự gửi.
-            User user = userRepository.findByUsername(principal.getName())
-                    .orElseThrow(() ->
-                            new MessagingException("Không tìm thấy người dùng"));
+            assertConversationMember(principal, conversationId);
+        }
 
-            // Kiểm tra người dùng có thuộc conversation này không.
-            boolean isMember =
-                    memberRepository.existsByConversation_IdAndUser_Id(
-                            conversationId, user.getId());
-
-            if (!isMember) {
-                throw new MessagingException(
-                        "Bạn không phải thành viên của phòng chat này");
+        if (StompCommand.SEND.equals(accessor.getCommand())) {
+            Principal principal = accessor.getUser();
+            if (principal == null) {
+                throw new MessagingException("WebSocket chưa được xác thực");
             }
+
+            String destination = accessor.getDestination();
+            JsonNode payload = parsePayload(message.getPayload());
+            Long conversationId;
+
+            if ("/app/chat.send".equals(destination)) {
+                conversationId = readLong(payload, "conversationId");
+            } else if ("/app/chat.edit".equals(destination)
+                    || "/app/chat.delete".equals(destination)) {
+                Long messageId = readLong(payload, "messageId");
+                conversationId = messageRepository.findActiveConversationIdById(messageId)
+                        .orElseThrow(() -> new MessagingException("Không tìm thấy tin nhắn"));
+            } else {
+                throw new MessagingException("Destination không được phép");
+            }
+
+            assertConversationMember(principal, conversationId);
         }
 
         return message;
+    }
+
+    private void assertConversationMember(Principal principal, Long conversationId) {
+        User user = userRepository.findByUsername(principal.getName())
+                .orElseThrow(() -> new MessagingException("Không tìm thấy người dùng"));
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new MessagingException("Không tìm thấy cuộc trò chuyện"));
+
+        if (conversation.getDeletedAt() != null) {
+            throw new MessagingException("Cuộc trò chuyện này đã bị xóa hoặc vô hiệu hóa");
+        }
+
+        if (!memberRepository.existsByConversation_IdAndUser_Id(conversationId, user.getId())) {
+            throw new MessagingException("Bạn không phải thành viên của phòng chat này");
+        }
+    }
+
+    private JsonNode parsePayload(Object payload) {
+        try {
+            if (payload instanceof byte[] bytes) {
+                return objectMapper.readTree(bytes);
+            }
+            if (payload instanceof String text) {
+                return objectMapper.readTree(text);
+            }
+        } catch (IOException exception) {
+            throw new MessagingException("Payload STOMP không hợp lệ", exception);
+        }
+        throw new MessagingException("Payload STOMP không hợp lệ");
+    }
+
+    private Long readLong(JsonNode payload, String fieldName) {
+        JsonNode value = payload.get(fieldName);
+        if (value == null || !value.canConvertToLong() || value.asLong() < 1) {
+            throw new MessagingException(fieldName + " không hợp lệ");
+        }
+        return value.asLong();
     }
 }

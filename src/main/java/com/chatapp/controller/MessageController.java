@@ -1,9 +1,11 @@
 package com.chatapp.controller;
 
+import com.chatapp.dto.ChatMessageEvent;
 import com.chatapp.dto.EditMessageRequest;
 import com.chatapp.dto.MessageResponse;
 import com.chatapp.dto.SendMessageRequest;
 import com.chatapp.entity.Message;
+import com.chatapp.service.ConversationEventPublisher;
 import com.chatapp.service.MessageService;
 
 import jakarta.validation.Valid;
@@ -14,6 +16,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.simp.SimpMessageSendingOperations;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
@@ -23,9 +26,17 @@ import org.springframework.web.server.ResponseStatusException;
 public class MessageController {
 
     private final MessageService messageService;
+        private final ConversationEventPublisher eventPublisher;
+        private final SimpMessageSendingOperations messagingTemplate;
 
-    public MessageController(MessageService messageService) {
+    public MessageController(
+            MessageService messageService,
+                        ConversationEventPublisher eventPublisher,
+            SimpMessageSendingOperations messagingTemplate
+    ) {
         this.messageService = messageService;
+                this.eventPublisher = eventPublisher;
+        this.messagingTemplate = messagingTemplate;
     }
 
     // Gửi một tin nhắn mới.
@@ -43,6 +54,21 @@ public class MessageController {
         );
 
         MessageResponse response = toResponse(message);
+
+        ChatMessageEvent event = new ChatMessageEvent(
+                "MESSAGE_CREATED",
+                message.getId(),
+                message.getConversation().getId(),
+                message.getSender().getUsername(),
+                message.getContent(),
+                message.getCreatedAt(),
+                message.getEditedAt()
+        );
+        messagingTemplate.convertAndSend(
+                "/topic/conversations/" + message.getConversation().getId(),
+                event
+        );
+        eventPublisher.publishToMembers(message.getConversation().getId(), event);
 
         return ResponseEntity.ok(response);
     }
@@ -106,6 +132,20 @@ public class MessageController {
                 request.getContent()
         );
 
+        ChatMessageEvent event = new ChatMessageEvent(
+                "MESSAGE_UPDATED",
+                message.getId(),
+                message.getConversation().getId(),
+                message.getSender().getUsername(),
+                message.getContent(),
+                message.getCreatedAt(),
+                message.getEditedAt()
+        );
+        messagingTemplate.convertAndSend(
+                "/topic/conversations/" + message.getConversation().getId(),
+                event
+        );
+
         return ResponseEntity.ok(toResponse(message));
     }
 
@@ -118,9 +158,23 @@ public class MessageController {
     ) {
         String currentUsername = authentication.getName();
 
-        messageService.deleteMessage(
+        Message deletedMessage = messageService.deleteMessage(
                 currentUsername,
                 messageId
+        );
+
+        ChatMessageEvent event = new ChatMessageEvent(
+                "MESSAGE_DELETED",
+                deletedMessage.getId(),
+                deletedMessage.getConversation().getId(),
+                deletedMessage.getSender().getUsername(),
+                null,
+                deletedMessage.getCreatedAt(),
+                deletedMessage.getEditedAt()
+        );
+        messagingTemplate.convertAndSend(
+                "/topic/conversations/" + deletedMessage.getConversation().getId(),
+                event
         );
 
         // HTTP 204: thao tác thành công, không cần trả nội dung.

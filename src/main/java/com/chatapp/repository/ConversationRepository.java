@@ -6,8 +6,10 @@ import com.chatapp.entity.ConversationType;
 import com.chatapp.entity.ConversationMember;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import java.time.LocalDateTime;
 
 import java.util.Optional;
 
@@ -43,5 +45,19 @@ public interface ConversationRepository
             @Param("type") ConversationType type,
             @Param("userId1") Long userId1,
             @Param("userId2") Long userId2
+    );
+
+    @Modifying
+    @Query("""
+        update Conversation c
+        set c.updatedAt = case
+          when c.updatedAt < :activityAt then :activityAt
+          else c.updatedAt
+        end
+        where c.id = :conversationId
+        """)
+    int advanceActivityTime(
+        @Param("conversationId") Long conversationId,
+        @Param("activityAt") LocalDateTime activityAt
     );
 }

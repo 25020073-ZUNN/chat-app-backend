@@ -19,6 +19,15 @@ public class Conversation {
     @Column(length = 100)
     private String name;
 
+    // Chủ sở hữu / người tạo cuộc trò chuyện (đặc biệt đối với nhóm chat).
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_id")
+    private User owner;
+
+    // Thời điểm xóa mềm. null nếu cuộc trò chuyện đang hoạt động.
+    @Column(name = "deleted_at")
+    private LocalDateTime deletedAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
@@ -63,5 +72,21 @@ public class Conversation {
     }
     public LocalDateTime getUpdatedAt() {
         return updatedAt;
+    }
+
+    public User getOwner() {
+        return owner;
+    }
+
+    public void setOwner(User owner) {
+        this.owner = owner;
+    }
+
+    public LocalDateTime getDeletedAt() {
+        return deletedAt;
+    }
+
+    public void setDeletedAt(LocalDateTime deletedAt) {
+        this.deletedAt = deletedAt;
     }
 }

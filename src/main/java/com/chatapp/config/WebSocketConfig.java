@@ -33,7 +33,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         registry.setApplicationDestinationPrefixes("/app");
 
         // Tin nhắn gửi đến /topic được phát cho các client đăng ký nhận.
-        registry.enableSimpleBroker("/topic");
+        registry.enableSimpleBroker("/topic", "/queue");
     }
 
     // Đăng ký interceptor để kiểm tra JWT trước khi xử lý STOMP.

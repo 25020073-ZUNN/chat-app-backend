@@ -2,12 +2,13 @@ package com.chatapp.controller;
 
 import com.chatapp.dto.SendMessageRequest;
 import com.chatapp.entity.Message;
+import com.chatapp.service.ConversationEventPublisher;
 import com.chatapp.service.MessageService;
 
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.messaging.simp.SimpMessageSendingOperations;
 import org.springframework.stereotype.Controller;
 
 import java.security.Principal;
@@ -17,14 +18,17 @@ import java.time.LocalDateTime;
 public class ChatWebSocketController {
 
     private final MessageService messageService;
-    private final SimpMessagingTemplate messagingTemplate;
+    private final ConversationEventPublisher eventPublisher;
+    private final SimpMessageSendingOperations messagingTemplate;
 
     // Spring tự động cung cấp Service và công cụ phát message.
     public ChatWebSocketController(
             MessageService messageService,
-            SimpMessagingTemplate messagingTemplate
+            ConversationEventPublisher eventPublisher,
+            SimpMessageSendingOperations messagingTemplate
     ) {
         this.messageService = messageService;
+        this.eventPublisher = eventPublisher;
         this.messagingTemplate = messagingTemplate;
     }
 
@@ -167,6 +171,18 @@ public class ChatWebSocketController {
                 + message.getConversationId();
 
         messagingTemplate.convertAndSend(destination, message);
+        if ("MESSAGE_CREATED".equals(message.getType())) {
+            eventPublisher.publishToMembers(message.getConversationId(),
+                new com.chatapp.dto.ChatMessageEvent(
+                    message.getType(),
+                    message.getId(),
+                    message.getConversationId(),
+                    message.getSender(),
+                    message.getContent(),
+                    message.getCreatedAt(),
+                    message.getEditedAt()
+                ));
+        }
     }
 
     // DTO nhận dữ liệu từ client và phát sự kiện xuống client.
