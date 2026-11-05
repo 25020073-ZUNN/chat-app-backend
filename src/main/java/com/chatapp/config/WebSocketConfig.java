@@ -20,10 +20,10 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         this.webSocketAuthInterceptor = webSocketAuthInterceptor;
     }
 
-    // Đăng ký địa chỉ để client bắt đầu kết nối WebSocket.
+    // Đăng ký địa chỉ để client bắt đầu kết nối WebSocket, cho phép mọi nguồn gọi đến.
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
-        registry.addEndpoint("/ws");
+        registry.addEndpoint("/ws").setAllowedOriginPatterns("*");
     }
 
     // Cấu hình cách Spring định tuyến tin nhắn.
